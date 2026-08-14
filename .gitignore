@@ -1,0 +1,21 @@
+# PlatformIO
+.pio/
+
+# clangd
+.cache/
+compile_commands.json
+
+# Emacs
+*~
+\#*\#
+.\#*
+.dir-locals.el
+
+
+# Go
+*.exe
+*.test
+*.out
+vendor/
+go.work
+go.work.sum
