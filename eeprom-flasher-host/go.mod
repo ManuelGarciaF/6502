@@ -1,4 +1,4 @@
-module github.com/ManuelGarciaF/6502/eeprom-flasher-client
+module github.com/ManuelGarciaF/6502/eeprom-flasher-host
 
 go 1.26.5
 
