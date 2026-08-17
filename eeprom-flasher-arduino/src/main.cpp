@@ -14,6 +14,31 @@
 
 #define WE_BIT PC0 // Part of PORTC
 
+#define EEPROM_SIZE 0x8000 // 32k bytes
+#define PAGE_SIZE 64       // Write page size in bytes
+
+#define MAX_PAYLOAD 64 // bytes
+
+#define MAGIC_HOST 0x42
+#define MAGIC_DEVICE 0x24
+
+// Structs
+enum Code : uint8_t {
+    CODE_READ = 0x01,
+    CODE_WRITE = 0x02,
+    CODE_ACK = 0x81,
+    CODE_NAK = 0x82,
+};
+
+struct FrameHeader {
+    uint8_t code;
+    uint16_t addr;
+    uint8_t len;
+};
+
+// Globals
+static uint8_t payload[MAX_PAYLOAD];
+
 // Static verification.
 static_assert((ADDR_MASK & OE_BIT_MASK) == 0, "/OE must not overlap with the address");
 static_assert((ADDR_MASK | OE_BIT_MASK) == 0xFFFF, "All SR outputs must be accounted for");
@@ -24,14 +49,23 @@ static_assert((DATA_B_MASK & _BV(SR_LATCH_BIT)) == 0, "Data bus must not overlap
 static_assert((DATA_B_MASK & _BV(PB3)) == 0, "Data bus must not overlap MOSI");
 static_assert((DATA_B_MASK & _BV(PB5)) == 0, "Data bus must not overlap SCK");
 
+static_assert(MAX_PAYLOAD >= PAGE_SIZE, "Payload buffer must hold a full page");
+
 /*
 ** Function definitions
 */
-static void dumpContents();
+static void sendNak(uint16_t addr);
+static void handleRead(const FrameHeader *header, uint8_t bytesToRead);
+static void handleWrite(const FrameHeader *header, const uint8_t *data);
+static void sendFrame(const FrameHeader *header, const uint8_t *data);
+static uint8_t frameCheckSum(uint8_t magic, const FrameHeader *header, const uint8_t *data);
+static uint8_t readByte(uint16_t addr);
+static bool readPage(uint16_t baseAddr, uint8_t *buffer, uint8_t len);
+static void loadByte(uint16_t addr, uint8_t data);
+static bool writePage(uint16_t baseAddr, const uint8_t *data, uint8_t len);
 static void busToEeprom(uint16_t addr);
 static void busToArduino(uint16_t addr, uint8_t data);
 static void setAddress(uint16_t addr, bool outputEnable);
-static uint8_t readByte(uint16_t addr);
 static void busOut(void);
 static void busIn(void);
 static void busWrite(uint8_t data);
@@ -50,39 +84,205 @@ void setup(void)
     DDRC |= _BV(WE_BIT);
 
     Serial.begin(1000000);
+    Serial.setTimeout(100); // Lower timeout to 100ms.
+
     SPI.begin();
 
     PORTB &= ~_BV(SR_LATCH_BIT); // Set latch low just in case.
 
     /* END OF SETUP */
-    dumpContents();
+    busToArduino(0x0000, 0x00); // Leave bus in a safe state.
 }
 
 void loop(void)
 {
+    // Wait for a frame to appear on the serial connection and answer.
+
+    // Wait for the magic bit to appear. Serial.read returns -1 when no data is available.
+    if (Serial.read() != MAGIC_HOST) {
+        return;
+    }
+
+    // Read header.
+    uint8_t headerBytes[4];
+    if (Serial.readBytes(headerBytes, sizeof(headerBytes)) != sizeof(headerBytes)) {
+        return; // Timed out mid-read.
+    }
+
+    FrameHeader header;
+    header.code = headerBytes[0];
+    header.addr = (uint16_t)headerBytes[1] | ((uint16_t)headerBytes[2] << 8); // Little endian encoded.
+    header.len = headerBytes[3];
+
+    if (header.len > MAX_PAYLOAD) {
+        sendNak(header.addr);
+        return;
+    }
+
+    // Read the payload. It lives in a global buffer.
+    if (Serial.readBytes(payload, header.len) != header.len) {
+        return; // Timed out mid-read
+    }
+
+    uint8_t checksum;
+    if (Serial.readBytes(&checksum, 1) != 1) {
+        return; // Timed out mid-read
+    }
+
+    // Verify checksum.
+    if (frameCheckSum(MAGIC_HOST, &header, payload) != checksum) {
+        sendNak(header.addr);
+        return;
+    }
+
+    switch (header.code) {
+    case CODE_READ:
+        if (header.len != 1) { // Read commands must be length=1
+            sendNak(header.addr);
+            break;
+        }
+        handleRead(&header, payload[0]);
+        break;
+    case CODE_WRITE:
+        handleWrite(&header, payload);
+        break;
+    default:
+        sendNak(header.addr);
+        break;
+    }
 }
 
 /*
-** Auxiliary functions
+** Protocol handling functions
 */
 
-static void dumpContents()
+static void sendNak(uint16_t addr)
 {
-    for (uint16_t addr = 0x0000; addr < 0x8000; addr += 8) {
-
-        uint8_t page[64];
-        for (uint16_t offset = 0; offset < sizeof(page); offset++) {
-            page[offset] = readByte(addr + offset);
-        }
-
-        Serial.write(page, sizeof(page));
-    }
-
-    // Return the bus to a known state.
-    busToArduino(0x0000, 0x00);
+    FrameHeader h = {CODE_NAK, addr, 0};
+    sendFrame(&h, NULL);
 }
 
-// Give control of the data bus to the eeprom. Data is available to be read after its done.
+static void handleRead(const FrameHeader *header, uint8_t bytesToRead)
+{
+    if (bytesToRead > MAX_PAYLOAD) {
+        sendNak(header->addr);
+        return;
+    }
+
+    // Read bytes
+    if (!readPage(header->addr, payload, bytesToRead)) {
+        sendNak(header->addr);
+        return;
+    }
+
+    // Send response.
+    FrameHeader h = {CODE_ACK, header->addr, bytesToRead};
+    sendFrame(&h, payload);
+}
+
+static void handleWrite(const FrameHeader *header, const uint8_t *data)
+{
+    // Write a page.
+    if (!writePage(header->addr, data, header->len)) {
+        // Couldn't write
+        sendNak(header->addr);
+        return;
+    }
+
+    // Send response.
+    FrameHeader h = {CODE_ACK, header->addr, 0};
+    sendFrame(&h, NULL);
+}
+
+static void sendFrame(const FrameHeader *header, const uint8_t *data)
+{
+    const uint8_t headerBuf[] = {MAGIC_DEVICE,
+                                 header->code,
+                                 lowByte(header->addr), // Little Endian encoding.
+                                 highByte(header->addr),
+                                 header->len};
+
+    // Send header, then payload, and lastly the checksum.
+    Serial.write(headerBuf, sizeof(headerBuf));
+    if (header->len > 0) {
+        Serial.write(data, header->len);
+    }
+    Serial.write(frameCheckSum(MAGIC_DEVICE, header, data));
+}
+
+static uint8_t frameCheckSum(uint8_t magic, const FrameHeader *header, const uint8_t *data)
+{
+    // XOR is commutative, order doesn't matter.
+    uint8_t sum = magic ^ header->code ^ lowByte(header->addr) ^ highByte(header->addr) ^ header->len;
+    for (uint8_t i = 0; i < header->len; i++) {
+        sum ^= data[i];
+    }
+    return sum;
+}
+
+/*
+** Auxiliary and i/o functions
+*/
+
+static uint8_t readByte(uint16_t addr)
+{
+    busToEeprom(addr);
+    return readBus();
+}
+
+static bool readPage(uint16_t baseAddr, uint8_t *buffer, uint8_t len)
+{
+    // Check len
+    if (len == 0 || len > PAGE_SIZE) {
+        return false;
+    }
+    // Check bounds of address.
+    if (baseAddr >= EEPROM_SIZE || len > EEPROM_SIZE - baseAddr) {
+        return false;
+    }
+
+    for (uint8_t offset = 0; offset < len; offset++) {
+        buffer[offset] = readByte(baseAddr + offset);
+    }
+    return true;
+}
+
+static void loadByte(uint16_t addr, uint8_t data)
+{
+    // Put data out on the buses.
+    busToArduino(addr, data);
+
+    // Pulse WE low
+    PORTC &= ~_BV(WE_BIT);
+    _NOP(); // Ensure t_WP of 100ns.
+    _NOP();
+    PORTC |= _BV(WE_BIT);
+}
+
+static bool writePage(uint16_t baseAddr, const uint8_t *data, uint8_t len)
+{
+    // Check len
+    if (len == 0 || len > PAGE_SIZE) {
+        return false;
+    }
+    // Check address is in bounds.
+    if (baseAddr >= EEPROM_SIZE || len > EEPROM_SIZE - baseAddr) {
+        return false;
+    }
+    // Check address is aligned for page writes.
+    if (baseAddr % PAGE_SIZE != 0) {
+        return false;
+    }
+
+    for (uint16_t offset = 0; offset < len; offset++) {
+        loadByte(baseAddr + offset, data[offset]);
+    }
+    delay(10); // TODO replace with polling to speed up flashing
+
+    return true;
+}
+
+// Give control of the data bus to the eeprom. Data is available to be read after it's done.
 static void busToEeprom(uint16_t addr)
 {
     // Release the bus, then give control to the eeprom by setting OE.
@@ -102,7 +302,7 @@ static void busToArduino(uint16_t addr, uint8_t data)
     // set it to output.
     setAddress(addr, false);
 
-    // t_DF is max of 50ns, the time for the EEPROM to release the bus, busWrite takes longer
+    // t_DF is max of 50ns, the time for the EEPROM to release the bus; busWrite takes longer
     // and we set bus to out after it, so no NOP needed.
 
     // Set data before enabling output.
@@ -124,12 +324,6 @@ static void setAddress(uint16_t addr, bool outputEnable)
     // Toggle latch.
     PORTB |= _BV(SR_LATCH_BIT);
     PORTB &= ~_BV(SR_LATCH_BIT);
-}
-
-static uint8_t readByte(uint16_t addr)
-{
-    busToEeprom(addr);
-    return readBus();
 }
 
 // Quickly set all the data bus' pins to output.

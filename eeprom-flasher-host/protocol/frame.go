@@ -44,7 +44,7 @@ type Frame struct {
 func (f *Frame) Encode() []byte { return f.encode(MagicHost) }
 
 func (f *Frame) encode(magic byte) []byte {
-	assert.LessThanOrEqual(len(f.Payload), maxPayload, "Payload must be smaller than 256 bytes")
+	assert.LessThanOrEqual(len(f.Payload), maxPayload, "Payload must be 255 bytes or less")
 
 	// header+payload+checksum
 	buf := make([]byte, headerLen+len(f.Payload)+1)

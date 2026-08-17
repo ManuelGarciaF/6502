@@ -16,22 +16,80 @@ func payload(n int) []byte {
 	return b
 }
 
-// TestEncodeGolden pins the exact wire bytes for a known frame. The C++
-// firmware must produce these same bytes; nothing else checks that agreement.
+// TestEncodeGolden pins the exact wire bytes for a known frame in each
+// direction. The C++ firmware must produce these same bytes; nothing else
+// checks that agreement.
 func TestEncodeGolden(t *testing.T) {
-	f := &Frame{Code: CodeRead, Address: 0x1234, Payload: []byte{0xAA, 0xBB}}
-
-	want := []byte{
-		MagicHost,  // magic
-		0x01,       // code
-		0x34, 0x12, // address, little endian
-		0x02,       // length
-		0xAA, 0xBB, // payload
-		0x76, // XOR of every preceding byte
+	tests := []struct {
+		name  string
+		magic byte
+		frame Frame
+		want  []byte
+	}{
+		{
+			name:  "host read request",
+			magic: MagicHost,
+			frame: Frame{Code: CodeRead, Address: 0x1234, Payload: []byte{0xAA, 0xBB}},
+			want: []byte{
+				MagicHost,  // magic
+				0x01,       // code
+				0x34, 0x12, // address, little endian
+				0x02,       // length
+				0xAA, 0xBB, // payload
+				0x76, // XOR of every preceding byte
+			},
+		},
+		{
+			name:  "device ack",
+			magic: MagicDevice,
+			frame: Frame{Code: CodeACK, Address: 0x0000},
+			want: []byte{
+				MagicDevice, // magic
+				0x81,        // code
+				0x00, 0x00,  // address
+				0x00, // length, no payload follows
+				0xA5, // MagicDevice ^ CodeACK
+			},
+		},
 	}
 
-	if got := f.Encode(); !bytes.Equal(got, want) {
-		t.Errorf("Encode() = % X, want % X", got, want)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.frame.encode(tt.magic); !bytes.Equal(got, tt.want) {
+				t.Errorf("encode(%#02x) = % X, want % X", tt.magic, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestChecksumMatchesFirmware pins the checksum for frames that were verified
+// byte-for-byte against the firmware's frameCheckSum(). These values are the
+// only artifact tying the two implementations together — if one side changes
+// its coverage (which bytes are XORed, or the address byte order), this fails.
+//
+// The 0x0034 / 0x1234 pair is deliberate: the two differ only in the high
+// address byte, so identical checksums would mean the high byte is not covered.
+func TestChecksumMatchesFirmware(t *testing.T) {
+	tests := []struct {
+		name  string
+		magic byte
+		frame Frame
+		want  byte
+	}{
+		{"read {0x1234, AA BB}", MagicHost, Frame{Code: CodeRead, Address: 0x1234, Payload: []byte{0xAA, 0xBB}}, 0x76},
+		{"read {0x0034, empty}", MagicHost, Frame{Code: CodeRead, Address: 0x0034}, 0x77},
+		{"read {0x1234, empty}", MagicHost, Frame{Code: CodeRead, Address: 0x1234}, 0x65},
+		{"write {0x0040, 64 bytes}", MagicHost, Frame{Code: CodeWrite, Address: 0x0040, Payload: payload(64)}, 0x80},
+		{"ack {0x0000, empty}", MagicDevice, Frame{Code: CodeACK, Address: 0x0000}, 0xA5},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wire := tt.frame.encode(tt.magic)
+			if got := wire[len(wire)-1]; got != tt.want {
+				t.Errorf("checksum = %#02x, want %#02x", got, tt.want)
+			}
+		})
 	}
 }
 

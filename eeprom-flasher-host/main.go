@@ -11,8 +11,7 @@ import (
 )
 
 var serialMode = serial.Mode{
-	BaudRate:          1000000,
-	InitialStatusBits: &serial.ModemOutputBits{DTR: false, RTS: false},
+	BaudRate: 1000000,
 }
 
 func main() {
@@ -30,14 +29,15 @@ func root(args []string) error {
 	switch args[0] {
 	case "dump":
 		return runDump(args[1:])
+	case "flash":
+		return runFlash(args[1:])
 	default:
 		return fmt.Errorf("unknown subcommand: %s", args[0])
 	}
 }
 
-
 func runDump(args []string) error {
-	// Flags
+	// Parse flags.
 	fs := flag.NewFlagSet("dump", flag.ExitOnError)
 	outPath := fs.String("o", "./dump.bin", "Path to write the dump to")
 	portName := fs.String("p", "/dev/ttyUSB0", "Serial port to connect to the arduino")
@@ -58,12 +58,53 @@ func runDump(args []string) error {
 	if err != nil {
 		return err
 	}
+	fmt.Println("Done.")
 
-	// Save dump
+	// Save dump.
 	fmt.Printf("Saving to %s...\n", *outPath)
 	if err := os.WriteFile(*outPath, dump, 0644); err != nil {
 		return err
 	}
+
+	return nil
+}
+
+func runFlash(args []string) error {
+	// Parse flags.
+	fs := flag.NewFlagSet("flash", flag.ExitOnError)
+	portName := fs.String("p", "/dev/ttyUSB0", "Serial port to connect to the arduino")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if fs.Arg(0) == "" {
+		return fmt.Errorf("must supply a path to a .bin file for flashing")
+	}
+
+	image, err := os.ReadFile(fs.Arg(0))
+	if err != nil {
+		return err
+	}
+
+	port, err := openPort(*portName)
+	if err != nil {
+		return err
+	}
+	defer port.Close()
+
+	device := NewDevice(port)
+
+	fmt.Println("Flashing...")
+	if err := device.Flash(image); err != nil {
+		return err
+	}
+
+	fmt.Println("Verifying...")
+	if err := device.Verify(image); err != nil {
+		return err
+	}
+	fmt.Println("Done.")
+
 
 	return nil
 }
@@ -73,6 +114,10 @@ func openPort(name string) (serial.Port, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Wait for the arduino to finish resetting
+	time.Sleep(2 * time.Second)
+
 	if err := port.ResetInputBuffer(); err != nil {
 		port.Close()
 		return nil, err
