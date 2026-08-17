@@ -7,8 +7,9 @@ Code for 65c02 breadboard computer project.
 ![The flasher](docs/flasher.jpg)
 
 A programmer for the AT28C256, split between PlatformIO firmware for an Arduino
-Nano (`eeprom-flasher-arduino/`) and a Go CLI that drives it over serial
-(`eeprom-flasher-host/`). Two daisy-chained 74HC595s supply the address lines
+Nano (`eeprom-flasher-arduino/`) and a Go CLI that drives it over serial with
+a simple custom comunication protocol (`eeprom-flasher-host/`). 
+Two daisy-chained 74HC595s supply the address lines
 over hardware SPI, with the last bit of the chain wired to `/OE`. It dumps the
 whole 32K in a couple of seconds, and flashes an image using 64-byte page writes
 before reading it back to verify.
