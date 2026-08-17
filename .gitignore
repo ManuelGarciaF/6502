@@ -11,6 +11,8 @@ compile_commands.json
 .\#*
 .dir-locals.el
 
+# Ignore dump.
+*.bin
 
 # Go
 *.exe

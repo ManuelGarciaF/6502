@@ -23,7 +23,7 @@ func main() {
 
 func root(args []string) error {
 	if len(args) < 1 {
-		return errors.New("usage: flasher <dump|flash> [options]")
+		return errors.New("usage: eeprom-flasher-host <dump|flash> [options]")
 	}
 
 	switch args[0] {
