@@ -39,7 +39,7 @@ func root(args []string) error {
 func runDump(args []string) error {
 	// Parse flags.
 	fs := flag.NewFlagSet("dump", flag.ExitOnError)
-	outPath := fs.String("o", "./dump.bin", "Path to write the dump to")
+	outPath := fs.String("o", "dump.bin", "Path to write the dump to")
 	portName := fs.String("p", "/dev/ttyUSB0", "Serial port to connect to the arduino")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -53,18 +53,17 @@ func runDump(args []string) error {
 
 	device := NewDevice(port)
 
-	fmt.Println("Starting dump...")
 	dump, err := device.Dump()
 	if err != nil {
 		return err
 	}
-	fmt.Println("Done.")
 
 	// Save dump.
-	fmt.Printf("Saving to %s...\n", *outPath)
 	if err := os.WriteFile(*outPath, dump, 0644); err != nil {
 		return err
 	}
+
+	fmt.Printf("Saved %d bytes to %s\n", len(dump), *outPath)
 
 	return nil
 }
@@ -94,17 +93,15 @@ func runFlash(args []string) error {
 
 	device := NewDevice(port)
 
-	fmt.Println("Flashing...")
 	if err := device.Flash(image); err != nil {
 		return err
 	}
 
-	fmt.Println("Verifying...")
 	if err := device.Verify(image); err != nil {
 		return err
 	}
-	fmt.Println("Done.")
 
+	fmt.Printf("Flashed and verified %d bytes from %s\n", len(image), fs.Arg(0))
 
 	return nil
 }

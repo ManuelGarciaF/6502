@@ -99,9 +99,7 @@ func (d *Device) Dump() ([]byte, error) {
 		dump = append(dump, res.Payload...)
 
 	}
-	fmt.Println()
-
-	fmt.Println("Done.")
+	fmt.Printf("\rDumping... 100%%\n")
 
 	if len(dump) != eepromSize {
 		return nil, fmt.Errorf("dump does not have the right size: %#04x", len(dump))
@@ -133,7 +131,7 @@ func (d *Device) Flash(data []byte) error {
 
 		addr += uint16(len(page))
 	}
-	fmt.Println()
+	fmt.Printf("\rFlashing... 100%%\n")
 
 	return nil
 }
@@ -166,7 +164,7 @@ func (d *Device) Verify(data []byte) error {
 
 		addr += uint16(len(page))
 	}
-	fmt.Println()
+	fmt.Printf("\rVerifying... 100%%\n")
 
 	return nil
 }
