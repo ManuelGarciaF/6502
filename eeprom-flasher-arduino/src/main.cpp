@@ -22,6 +22,8 @@
 #define MAGIC_HOST 0x42
 #define MAGIC_DEVICE 0x24
 
+#define WRITE_TIMEOUT_MS 20 // t_WC is max 10ms
+
 // Structs
 enum Code : uint8_t {
     CODE_READ = 0x01,
@@ -63,6 +65,7 @@ static uint8_t readByte(uint16_t addr);
 static bool readPage(uint16_t baseAddr, uint8_t *buffer, uint8_t len);
 static void loadByte(uint16_t addr, uint8_t data);
 static bool writePage(uint16_t baseAddr, const uint8_t *data, uint8_t len);
+static bool waitForWrite(uint16_t addr, uint8_t expected);
 static void busToEeprom(uint16_t addr);
 static void busToArduino(uint16_t addr, uint8_t data);
 static void setAddress(uint16_t addr, bool outputEnable);
@@ -277,9 +280,26 @@ static bool writePage(uint16_t baseAddr, const uint8_t *data, uint8_t len)
     for (uint16_t offset = 0; offset < len; offset++) {
         loadByte(baseAddr + offset, data[offset]);
     }
-    delay(10); // TODO replace with polling to speed up flashing
 
-    return true;
+    return waitForWrite(baseAddr+len-1, data[len-1]);
+}
+
+static bool waitForWrite(uint16_t addr, uint8_t expected)
+{
+    // Wait for t_BLC to expire (150us max)
+    delayMicroseconds(200);
+
+    // Write finished when bit 7 contains the correct value.
+    uint8_t match = expected & 0x80;
+    uint32_t start = millis();
+    while (millis() - start < WRITE_TIMEOUT_MS) {
+        if ((readByte(addr) & 0x80) == match) {
+            return true;            
+        }
+    }
+
+    // Timed out.
+    return false;
 }
 
 // Give control of the data bus to the eeprom. Data is available to be read after it's done.
