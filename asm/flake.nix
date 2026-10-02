@@ -6,6 +6,7 @@
     let
       pkgs = nixpkgs.legacyPackages.x86_64-linux;
 
+      # Build vasm with nix
       vasm = pkgs.stdenv.mkDerivation {
         pname = "vasm";
         version = "2.0f";
